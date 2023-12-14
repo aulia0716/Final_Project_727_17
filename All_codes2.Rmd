@@ -1,0 +1,334 @@
+---
+title: "Final Project"
+author: 
+  - Aulia Dini Rafsanjani
+  - Yesdi Christian Calvin
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, comment = FALSE, 
+                      fig.align = "center", out.width = "80%")
+```
+
+```{r}
+# Set to your filepath
+setwd("C:/Users/ASUS/Documents/SURVMETH727_FINAL_PROJECT/Final_Project_727/")
+```
+
+### Library
+
+```{r}
+library(RedditExtractoR)
+library(tidyverse)
+library(lubridate)
+library(qdap)
+library(SentimentAnalysis)
+library(quanteda)
+library(vader)
+library(GGally)
+library(xlsx)
+library(tm)
+library(wordcloud)
+library(SnowballC)
+```
+
+# Data collection
+
+Data encompassing posts, threads, and comments was systematically gathered from November 16, 2023, to November 22, 2023, using the Reddit API to achieve the objectives of this study. This period is chosen because this period seems to be a trending topic for the next couple of weeks, other than to study the pattern within a week.
+
+We collected the posts, thread, and comments separately based on subreddit of `r/Palestine` and subreddit `r/Israel`. The keywords “israel palestine” was be used to retrieve the subreddits. 
+
+```{r}
+#conflict_subreddits <- find_subreddits(keywords = "palestine")
+#write.csv(x = conflict_subreddits, file = "conflict_subreddits.csv") # save all subreddit into file
+conflict_subreddits <- read.csv("conflict_subreddits.csv",1)
+```
+
+```{r}
+head(conflict_subreddits)
+n_subreddits <- nrow(conflict_subreddits)
+n_subreddits
+```
+
+```{r}
+# Filter the data frame based on the 'subreddit' column. 
+# We divide the work into subreddit "Palestine" and subreddit "Israel"
+subset_palestine <- conflict_subreddits[conflict_subreddits$subreddit %in% c('Palestine'), ]
+subset_israel <- conflict_subreddits[conflict_subreddits$subreddit %in% c('Israel'), ]
+
+# Display the filtered data frame
+head(subset_palestine)
+```
+
+We get `r n_subreddits` subreddits related to keyword "israel palestine".
+
+```{r}
+conflict_posts <- data.frame()
+# Substitute "subset_palestine" to "subset_israel"
+for (sr in subset_palestine$subreddit) {
+  new_post <- find_thread_urls(keywords = "israel palestine", subreddit = sr, period = "week")
+  if (!is.null(ncol(new_post))) {   # If there are any relevant posts
+    conflict_posts <- conflict_posts %>% 
+      bind_rows(new_post)
+  }
+  # Sys.sleep(2)
+}
+conflict_posts <- conflict_posts %>% 
+  drop_na() %>% 
+  distinct() %>% 
+  mutate(collect_time = now("EST"))
+
+date_today <- str_c(str_extract_all(ymd(today("EST")), "\\d")[[1]], collapse = "")
+write.xlsx(x = conflict_posts, 
+          file = paste0("posts/conflict_posts", date_today, ".xlsx"))
+head(conflict_posts)
+```
+
+# Data cleaning and pre-processing
+
+The data cleaning and processing was done by identifying any duplication title, text, subreddit, url in the posts and thread files. Additionally, we also remove duplication in terms of url, author, and comment from comments file. After ensuring that all data was cleaned, we merge files from seven days into one file. 
+
+```{r}
+merge_all <- function(type) {
+  dates <- c("1116", "1117", "1118", "1119", "1120", "1121", "1122")
+  filenames <- paste0(type, "/", "conflict_", type, "2023", dates, ".xlsx")
+  
+  dt <- data.frame()
+  for (f in filenames) {
+    dt_day <- read.xlsx(f, sheetIndex = 1)
+    dt <- dt %>% 
+      bind_rows(dt_day) %>% 
+      distinct()
+    
+    if (type != "comments") {
+      dup_flag <- duplicated(dt[, c("title", "text", "subreddit", "url")])
+      dt <- dt %>% 
+        filter(!dup_flag)
+    } else {
+      dup_flag <- duplicated(dt[, c("url", "author", "comment")])
+      dt <- dt %>% 
+        filter(!dup_flag)
+    }
+  }
+  
+  return(dt)
+}
+```
+
+```{r}
+# merge all posts file
+posts <- merge_all(type = "posts")
+```
+
+```{r}
+# save the files as one file
+write.xlsx(posts, file = "posts/output_post.xlsx")
+```
+
+### Data Analysis
+
+### Merge the two datasets
+
+```{r}
+# Set to your filepath
+setwd("C:/Users/ASUS/Documents/SURVMETH727_FINAL_PROJECT/Final_Project_727/")
+```
+
+```{r}
+# read datasets of israel
+posts_is <- read.xlsx("data_all/data_israel/output_post.xlsx", sheetIndex = 1)
+```
+
+```{r}
+# read datasets of palestine
+posts_pa <- read.xlsx("data_all/data_palestine/output_post.xlsx", sheetIndex = 1)
+```
+
+```{r}
+# combine the data
+posts <- rbind(posts_is, posts_pa)
+```
+
+## Frequent terms
+
+After that, we compute the most frequent terms of the posts. In this step, we remove all stopwords including subjects (i.e. I, you, we, she, etc.), prepositions (i.e. to, of, in, for, from, on, etc.), verbs (i.e. do, make, have, etc.), auxiliary verbs (i.e. be, will, can, etc.), and many unspecific words that can be found in any occasions. Then, we sort the words from the most frequent one. 
+
+We created histogram for subreddit Israel. 
+
+```{r}
+# create posts title for subreddit Israel
+posts_is$title_text <- paste(posts_is$title, posts_is$text)
+```
+
+```{r}
+# Create a Corpus from the 'title_text' column
+corpus <- Corpus(VectorSource(posts_is$title_text))
+```
+
+```{r}
+# Perform text cleaning (convert to lowercase, remove punctuation, numbers, etc.)
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+```
+
+```{r}
+# Define a custom stemming function to replace specific words
+custom_stemming <- function(x) {
+  x <- gsub("palestinians", "palestinian", x, ignore.case = TRUE)
+  x <- gsub("israelis", "israeli", x, ignore.case = TRUE)
+  x <- gsub("israels", "israel", x, ignore.case = TRUE)
+  x <- gsub("arabs", "arab", x, ignore.case = TRUE)
+  # Add more replacements as needed
+  return(x)
+}
+
+# Apply custom stemming
+corpus <- tm_map(corpus, content_transformer(custom_stemming))
+```
+
+
+```{r}
+# plot of frequent words for subreddit Israel
+frequent_terms_is <- freq_terms(corpus, 20, 
+                                stopwords = c("the","and","to","of","a","in","is","that", "i", "are",
+                                              "for","they","with", "this","it", "not", "but", "on", 
+                                              "as","you","from", "have" , "or", "by", "who", "what",
+                                              "their","be","was", "an","so", "about", "my","all","them",
+                                              "there", "when","do","which"  ,"has", "am","s", "https",
+                                              "www","org","it's","being","don't","i'm","while","since",
+                                              "both","b","t","any","had","if","were","just","no","how","been",
+                                              "at","some","why","those","very","we","her","because","only","like",
+                                              "more","she","want","many","other","even","will","its","only","between",
+                                              "me","your","one","out","can","would","get","into","than",
+                                              "other","also","much","after","people","know", "dont", "im", "say", "see", 
+                                              "httpswwwjstororgstable", "side", "us", "now", "time", "doesnt", "anyone"))                   
+
+plot(frequent_terms_is)
+
+# Save the plot to a file
+#ggsave("freq_terms_is.png",plot=last_plot(), device="png",width=6,height=4,units="in",dpi=300)
+```
+
+We created histogram for subreddit Palestine. 
+
+```{r}
+# create posts title for subreddit palestine
+posts_pa$title_text <- paste(posts_pa$title, posts_pa$text)
+```
+
+```{r}
+# Create a Corpus from the 'title_text' column
+corpus <- Corpus(VectorSource(posts_pa$title_text))
+
+# Apply custom stemming
+corpus <- tm_map(corpus, content_transformer(custom_stemming))
+```
+
+```{r}
+# plot of frequent words for subreddit palestine
+frequent_terms_pa <- freq_terms(corpus, 20, 
+                                stopwords = c("the","and","of","to","a","in","is", 
+                                              "that","for","i","this","it","are", 
+                                              "on","they","with","we","not","as",  
+                                              "was","have","all","by","from","be", 
+                                              "you","but","their","about","them", 
+                                              "how","or","if","who","has","its", 
+                                              "an","so","there","will","us","at", 
+                                              "were", "can", "been", "do", "these", 
+                                              "me", "had", "our", "his", "would", 
+                                              "he", "my", "your", "out", "up", "did",
+                                              "any", "i'm", "still", "while", 
+                                              "which", "also", "even", "httpswebarchiveorgweb", "no", 
+                                              "just", "some", "what", "one", "like", "more", "because", "other",
+                                              "against", "know", "when", "people", "many", "most", "shall"))
+
+plot(frequent_terms_pa)
+
+# Save the plot to a file
+#ggsave("freq_terms_pa.png", plot = last_plot(), device = "png", width = 6, height = 4, units = "in", dpi = 300)
+```
+
+### Sentiment Analysis
+
+```{r}
+# check column names
+colnames(posts_is)
+colnames(posts_pa)
+```
+Compute sentiments for subreddit `r/Israel`
+
+We decided to compute the sentiments based on Vader dictionary because Vader has considered both the word used (lexical features) and the grammatical structure to compute the sentiment score. The Vader dictionary has a minimum score of -1 (very negative) and maximum of +1 (very positive).
+
+```{r}
+# calculate sentiments using vader
+vader_scores_is <- vader_df(posts_is$title_text)
+```
+
+```{r}
+# merge data posts and data sentiments
+vader_scores <- vader_scores_is[,3]
+all_posts_is <- cbind(posts_is, vader_scores)
+```
+
+In this step, we created plot of sentiments trend over time. 
+
+```{r}
+# plot of Vader over time
+ggplot(data = all_posts_is, mapping = aes(x = as.Date(date_utc), y = vader_scores)) + 
+  geom_point() + 
+  geom_smooth()
+
+# Save the plot to a file
+#ggsave("sentiment_vader_is.png", plot = last_plot(), device = "png", width = 6, height = 4, units = "in", dpi = 300)
+```
+
+Compute sentiments for subreddit `r/Palestine`
+
+```{r}
+# calculate sentiments using vader
+vader_scores_pa <- vader_df(posts_pa$title_text)
+```
+
+```{r}
+# merge data posts and data sentiments
+vader_scores <- vader_scores_pa[,3]
+all_posts_pa <- cbind(posts_pa, vader_scores)
+```
+
+```{r}
+# plot of Vader over time
+ggplot(data = all_posts_pa, mapping = aes(x = as.Date(date_utc), y = vader_scores)) + 
+  geom_point() + 
+  geom_smooth()
+
+# Save the plot to a file
+#ggsave("sentiment_vader_pa.png", plot = last_plot(), device = "png", width = 6, height = 4, units = "in", dpi = 300)
+```
+
+### Compare the difference in sentiment between `r/Palestine` and `r/Israel`
+
+The above plots show a different patterns between the two subreddits over time. This finding sparks our interest to do formal test of the sentiments between the two subreddits. 
+
+```{r}
+# Combine data from `r/Israel` and `r/Palestine` 
+post_merge <- rbind(all_posts_is, all_posts_pa)
+
+# check the dimension
+dim(post_merge)
+```
+
+```{r}
+# histogram and statistical test, vader
+par(mfrow = c(1,2))
+p1 <- hist(x = post_merge$vader_scores[post_merge$subreddit == "Israel"], 
+     main = "r/Israel", xlab = "Vader")
+p2 <- hist(x = post_merge$vader_scores[post_merge$subreddit == "Palestine"], 
+     main = "r/Palestine", xlab = "Vader")
+
+# compute t-test result
+t.test(post_merge$vader_scores[post_merge$subreddit == "Israel"], 
+       post_merge$vader_scores[post_merge$subreddit == "Palestine"])
+```
